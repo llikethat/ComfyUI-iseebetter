@@ -85,6 +85,9 @@ class ISeeBetterModelLoader:
     
     This node loads pre-trained iSeeBetter/RBPN weights for use
     with the video upscaling nodes.
+    
+    Note: The model's nFrames is fixed at training time. If the checkpoint
+    was trained with nFrames=7, you must use 7 or the weights won't match.
     """
     
     @classmethod
@@ -93,12 +96,14 @@ class ISeeBetterModelLoader:
             "required": {
                 "model_name": (get_model_files(),),
                 "scale_factor": ([2, 4, 8], {"default": 4}),
-                "num_frames": ("INT", {
-                    "default": 7, 
-                    "min": 3, 
+            },
+            "optional": {
+                "force_num_frames": ("INT", {
+                    "default": 0, 
+                    "min": 0, 
                     "max": 15, 
-                    "step": 2,
-                    "tooltip": "Number of input frames for temporal processing (use odd numbers)"
+                    "step": 1,
+                    "tooltip": "Force specific nFrames (0 = auto-detect from checkpoint). WARNING: Must match checkpoint!"
                 }),
             }
         }
@@ -109,12 +114,13 @@ class ISeeBetterModelLoader:
     CATEGORY = "video/upscaling"
     DESCRIPTION = "Load an iSeeBetter/RBPN model for video super-resolution"
     
-    def load_model(self, model_name, scale_factor, num_frames):
+    def load_model(self, model_name, scale_factor, force_num_frames=0):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         if model_name == "none":
             # Create untrained model (for testing or when no weights available)
-            print("[iSeeBetter] No model file specified, creating untrained model")
+            num_frames = force_num_frames if force_num_frames > 0 else 7
+            print(f"[iSeeBetter] No model file specified, creating untrained model with nFrames={num_frames}")
             model = RBPN(
                 num_channels=3,
                 base_filter=256,
@@ -135,13 +141,23 @@ class ISeeBetterModelLoader:
             
             print(f"[iSeeBetter] Loading model from: {model_path}")
             
+            # Use force_num_frames if specified, otherwise auto-detect
+            nFrames_to_use = force_num_frames if force_num_frames > 0 else 7
+            
             # load_rbpn_model returns (model, actual_scale_factor, actual_nframes)
             model, scale_factor, num_frames = load_rbpn_model(
                 model_path=model_path,
                 device=device,
                 scale_factor=scale_factor,
-                nFrames=num_frames
+                nFrames=nFrames_to_use
             )
+            
+            # If user forced a different nFrames, warn them
+            if force_num_frames > 0 and force_num_frames != num_frames:
+                print(f"[iSeeBetter] ⚠️  WARNING: You requested nFrames={force_num_frames} but checkpoint needs nFrames={num_frames}")
+                print(f"[iSeeBetter] ⚠️  Using checkpoint's nFrames={num_frames} to avoid errors")
+        
+        print(f"[iSeeBetter] Model ready: scale={scale_factor}x, nFrames={num_frames}")
         
         return ({
             "model": model,
@@ -1503,6 +1519,265 @@ class ImageSharpener:
         return (result,)
 
 
+class GolfBallArtifactRemover:
+    """
+    Remove "golf ball" / blocky artifacts from video frames.
+    
+    This node applies various deblocking and smoothing techniques to
+    reduce compression artifacts and upscaling artifacts that create
+    a bumpy "golf ball" texture.
+    
+    Techniques used:
+    - Bilateral filtering (edge-preserving smoothing)
+    - Adaptive deblocking
+    - Local contrast normalization
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "strength": ("FLOAT", {
+                    "default": 0.5,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.1,
+                    "tooltip": "Artifact removal strength (higher = more smoothing)"
+                }),
+                "preserve_edges": ("FLOAT", {
+                    "default": 0.7,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.1,
+                    "tooltip": "Edge preservation (higher = keep more detail)"
+                }),
+                "method": (["bilateral", "guided", "median", "adaptive"], {
+                    "default": "bilateral",
+                    "tooltip": "bilateral=best quality, guided=fast, median=aggressive, adaptive=auto"
+                }),
+            },
+            "optional": {
+                "block_size": ("INT", {
+                    "default": 8,
+                    "min": 4,
+                    "max": 32,
+                    "step": 4,
+                    "tooltip": "Block size to detect (8 for most compression artifacts)"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("cleaned_images",)
+    FUNCTION = "remove_artifacts"
+    CATEGORY = "video/upscaling"
+    DESCRIPTION = "Remove golf ball / blocky artifacts from video frames"
+    
+    def remove_artifacts(self, images, strength, preserve_edges, method, block_size=8):
+        """Apply artifact removal."""
+        B, H, W, C = images.shape
+        print(f"[ArtifactRemover] Processing {B} frames at {W}x{H}, method={method}")
+        
+        # Convert to BCHW
+        images_bchw = images.permute(0, 3, 1, 2)
+        
+        if method == "bilateral":
+            result = self._bilateral_filter(images_bchw, strength, preserve_edges)
+        elif method == "guided":
+            result = self._guided_filter(images_bchw, strength, preserve_edges)
+        elif method == "median":
+            result = self._median_filter(images_bchw, strength)
+        elif method == "adaptive":
+            result = self._adaptive_deblock(images_bchw, strength, preserve_edges, block_size)
+        else:
+            result = images_bchw
+        
+        # Blend with original based on strength
+        result = images_bchw * (1 - strength) + result * strength
+        
+        # Convert back to BHWC
+        result = result.permute(0, 2, 3, 1).clamp(0, 1)
+        
+        return (result,)
+    
+    def _bilateral_filter(self, x, strength, edge_preserve):
+        """Edge-preserving bilateral-like filter using convolutions."""
+        B, C, H, W = x.shape
+        
+        # Create distance-based spatial kernel
+        kernel_size = int(5 + strength * 6)  # 5 to 11
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        
+        sigma_spatial = kernel_size / 3
+        sigma_range = (1 - edge_preserve) * 0.3 + 0.05  # Range sigma
+        
+        # For simplicity, use a separable approximation
+        # First pass: spatial smoothing
+        padding = kernel_size // 2
+        
+        # Create Gaussian kernel
+        coords = torch.arange(kernel_size, device=x.device, dtype=x.dtype) - padding
+        gaussian_1d = torch.exp(-coords**2 / (2 * sigma_spatial**2))
+        gaussian_1d = gaussian_1d / gaussian_1d.sum()
+        
+        # Apply separable Gaussian
+        kernel_h = gaussian_1d.view(1, 1, 1, -1).expand(C, 1, 1, -1)
+        kernel_v = gaussian_1d.view(1, 1, -1, 1).expand(C, 1, -1, 1)
+        
+        # Horizontal pass
+        x_pad = F.pad(x, (padding, padding, 0, 0), mode='reflect')
+        x_smooth = F.conv2d(x_pad, kernel_h, groups=C)
+        
+        # Vertical pass
+        x_pad = F.pad(x_smooth, (0, 0, padding, padding), mode='reflect')
+        x_smooth = F.conv2d(x_pad, kernel_v, groups=C)
+        
+        # Adaptive blending based on local variance (edge detection)
+        local_var = self._local_variance(x, kernel_size)
+        edge_mask = torch.sigmoid((local_var - 0.01) * 100 * edge_preserve)
+        
+        # Blend: keep original at edges, use smoothed in flat areas
+        result = x * edge_mask + x_smooth * (1 - edge_mask)
+        
+        return result
+    
+    def _guided_filter(self, x, strength, edge_preserve):
+        """Guided filter for edge-preserving smoothing."""
+        B, C, H, W = x.shape
+        
+        radius = int(2 + strength * 8)  # 2 to 10
+        eps = (1 - edge_preserve) * 0.1 + 0.001
+        
+        # Use box filter approximation
+        kernel_size = 2 * radius + 1
+        
+        # Mean filter
+        mean_I = F.avg_pool2d(
+            F.pad(x, (radius, radius, radius, radius), mode='reflect'),
+            kernel_size, stride=1
+        )
+        
+        mean_II = F.avg_pool2d(
+            F.pad(x * x, (radius, radius, radius, radius), mode='reflect'),
+            kernel_size, stride=1
+        )
+        
+        var_I = mean_II - mean_I * mean_I
+        
+        # Guided filter coefficients
+        a = var_I / (var_I + eps)
+        b = mean_I - a * mean_I
+        
+        # Mean of coefficients
+        mean_a = F.avg_pool2d(
+            F.pad(a, (radius, radius, radius, radius), mode='reflect'),
+            kernel_size, stride=1
+        )
+        mean_b = F.avg_pool2d(
+            F.pad(b, (radius, radius, radius, radius), mode='reflect'),
+            kernel_size, stride=1
+        )
+        
+        result = mean_a * x + mean_b
+        
+        return result
+    
+    def _median_filter(self, x, strength):
+        """Median filter for aggressive artifact removal."""
+        B, C, H, W = x.shape
+        
+        kernel_size = int(3 + strength * 4)  # 3 to 7
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        
+        padding = kernel_size // 2
+        
+        # Unfold to get patches
+        x_pad = F.pad(x, (padding, padding, padding, padding), mode='reflect')
+        patches = x_pad.unfold(2, kernel_size, 1).unfold(3, kernel_size, 1)
+        # patches: [B, C, H, W, k, k]
+        
+        patches = patches.contiguous().view(B, C, H, W, -1)
+        
+        # Take median
+        result = patches.median(dim=-1)[0]
+        
+        return result
+    
+    def _adaptive_deblock(self, x, strength, edge_preserve, block_size):
+        """Adaptive deblocking based on block boundary detection."""
+        B, C, H, W = x.shape
+        
+        # Detect block boundaries
+        block_mask = self._detect_block_boundaries(x, block_size)
+        
+        # Apply stronger smoothing at block boundaries
+        smooth = self._bilateral_filter(x, strength * 1.5, edge_preserve)
+        
+        # Blend based on block boundary detection
+        result = x * (1 - block_mask * strength) + smooth * (block_mask * strength)
+        
+        return result
+    
+    def _detect_block_boundaries(self, x, block_size):
+        """Detect blocking artifact boundaries."""
+        B, C, H, W = x.shape
+        
+        # Compute gradient magnitude
+        grad_x = torch.abs(x[:, :, :, 1:] - x[:, :, :, :-1])
+        grad_y = torch.abs(x[:, :, 1:, :] - x[:, :, :-1, :])
+        
+        # Pad back to original size
+        grad_x = F.pad(grad_x, (0, 1, 0, 0))
+        grad_y = F.pad(grad_y, (0, 0, 0, 1))
+        
+        # Create block boundary mask
+        mask_x = torch.zeros_like(x[:, :1, :, :])
+        mask_y = torch.zeros_like(x[:, :1, :, :])
+        
+        for i in range(block_size, W, block_size):
+            if i < W:
+                mask_x[:, :, :, i] = 1
+        for i in range(block_size, H, block_size):
+            if i < H:
+                mask_y[:, :, i, :] = 1
+        
+        # Combine with gradient to find actual block artifacts
+        block_mask = (grad_x.mean(dim=1, keepdim=True) * mask_x + 
+                      grad_y.mean(dim=1, keepdim=True) * mask_y)
+        
+        # Dilate the mask slightly
+        block_mask = F.max_pool2d(block_mask, 3, stride=1, padding=1)
+        
+        # Normalize
+        block_mask = block_mask / (block_mask.max() + 1e-8)
+        
+        return block_mask.expand(-1, C, -1, -1)
+    
+    def _local_variance(self, x, kernel_size):
+        """Compute local variance for edge detection."""
+        padding = kernel_size // 2
+        
+        # Mean
+        mean = F.avg_pool2d(
+            F.pad(x, (padding, padding, padding, padding), mode='reflect'),
+            kernel_size, stride=1
+        )
+        
+        # Mean of squares
+        mean_sq = F.avg_pool2d(
+            F.pad(x * x, (padding, padding, padding, padding), mode='reflect'),
+            kernel_size, stride=1
+        )
+        
+        # Variance = E[X^2] - E[X]^2
+        var = mean_sq - mean * mean
+        
+        return var
+
+
 # Helper functions for model discovery
 def get_water_enhancer_models():
     """Get list of available water enhancer model files."""
@@ -1639,6 +1914,7 @@ NODE_CLASS_MAPPINGS = {
     "SRGANDiscriminatorLoader": SRGANDiscriminatorLoader,
     "PerceptualQualityScore": PerceptualQualityScore,
     "ImageSharpener": ImageSharpener,
+    "GolfBallArtifactRemover": GolfBallArtifactRemover,
     "ISeeBetterDebugTest": ISeeBetterDebugTest,
 }
 
@@ -1659,6 +1935,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "SRGANDiscriminatorLoader": "SRGAN Discriminator Loader",
     "PerceptualQualityScore": "Perceptual Quality Score",
     "ImageSharpener": "Image Sharpener",
+    "GolfBallArtifactRemover": "Golf Ball Artifact Remover",
     "ISeeBetterDebugTest": "iSeeBetter Debug Test",
 }
 
