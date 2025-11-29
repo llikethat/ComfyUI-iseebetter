@@ -97,73 +97,106 @@ class SpyNet(nn.Module):
         B, C, H, W = ref.shape
         
         # Normalize
-        ref = self.normalize(ref)
-        supp = self.normalize(supp)
+        ref_norm = self.normalize(ref)
+        supp_norm = self.normalize(supp)
         
-        # Build pyramid
-        ref_pyramid = [ref]
-        supp_pyramid = [supp]
+        # Build pyramid - store sizes explicitly
+        ref_pyramid = [ref_norm]
+        supp_pyramid = [supp_norm]
+        pyramid_sizes = [(H, W)]
         
-        for _ in range(self.num_levels - 1):
-            ref_pyramid.append(F.avg_pool2d(ref_pyramid[-1], kernel_size=2, stride=2))
-            supp_pyramid.append(F.avg_pool2d(supp_pyramid[-1], kernel_size=2, stride=2))
+        for i in range(self.num_levels - 1):
+            # Use explicit size calculation to avoid rounding issues
+            new_h = ref_pyramid[-1].shape[2] // 2
+            new_w = ref_pyramid[-1].shape[3] // 2
+            if new_h < 1:
+                new_h = 1
+            if new_w < 1:
+                new_w = 1
+            
+            ref_down = F.interpolate(ref_pyramid[-1], size=(new_h, new_w), mode='bilinear', align_corners=False)
+            supp_down = F.interpolate(supp_pyramid[-1], size=(new_h, new_w), mode='bilinear', align_corners=False)
+            
+            ref_pyramid.append(ref_down)
+            supp_pyramid.append(supp_down)
+            pyramid_sizes.append((new_h, new_w))
         
         # Reverse for coarse-to-fine
         ref_pyramid = ref_pyramid[::-1]
         supp_pyramid = supp_pyramid[::-1]
+        pyramid_sizes = pyramid_sizes[::-1]
         
-        # Coarse-to-fine flow estimation
-        flow = torch.zeros(B, 2, ref_pyramid[0].shape[2], ref_pyramid[0].shape[3], 
-                          device=ref.device, dtype=ref.dtype)
+        # Initialize flow at coarsest level
+        coarse_h, coarse_w = pyramid_sizes[0]
+        flow = torch.zeros(B, 2, coarse_h, coarse_w, device=ref.device, dtype=ref.dtype)
         
         for level in range(self.num_levels):
-            # Get target size for this level
-            target_h, target_w = ref_pyramid[level].shape[2], ref_pyramid[level].shape[3]
+            target_h, target_w = pyramid_sizes[level]
             
-            if level > 0:
-                # Upsample flow from previous level to match target size exactly
-                flow = F.interpolate(flow, size=(target_h, target_w), mode='bilinear', align_corners=False)
-                # Scale flow values proportionally
-                scale_h = target_h / flow.shape[2] if flow.shape[2] > 0 else 1
-                scale_w = target_w / flow.shape[3] if flow.shape[3] > 0 else 1
-                # After interpolate, flow is already target size, so we just scale by ~2
-                flow = flow * 2.0
-            
-            # Ensure flow matches target size (safety check)
+            # Resize flow to match current level if needed
             if flow.shape[2] != target_h or flow.shape[3] != target_w:
+                # Calculate scale factors
+                scale_h = target_h / flow.shape[2]
+                scale_w = target_w / flow.shape[3]
+                
                 flow = F.interpolate(flow, size=(target_h, target_w), mode='bilinear', align_corners=False)
+                # Scale flow values
+                flow = flow.clone()
+                flow[:, 0] *= scale_w
+                flow[:, 1] *= scale_h
+            
+            # Get current pyramid level images
+            ref_level = ref_pyramid[level]
+            supp_level = supp_pyramid[level]
+            
+            # Ensure images match expected size
+            if ref_level.shape[2] != target_h or ref_level.shape[3] != target_w:
+                ref_level = F.interpolate(ref_level, size=(target_h, target_w), mode='bilinear', align_corners=False)
+            if supp_level.shape[2] != target_h or supp_level.shape[3] != target_w:
+                supp_level = F.interpolate(supp_level, size=(target_h, target_w), mode='bilinear', align_corners=False)
             
             # Warp support image using current flow estimate
-            warped = self.warp(supp_pyramid[level], flow)
+            warped = self._safe_warp(supp_level, flow)
             
             # Concatenate ref, warped, and flow
-            flow_input = torch.cat([ref_pyramid[level], warped, flow], dim=1)
+            flow_input = torch.cat([ref_level, warped, flow], dim=1)
             
             # Estimate residual flow
             flow_residual = self.basic_modules[level](flow_input)
             flow = flow + flow_residual
         
+        # Final resize to original resolution if needed
+        if flow.shape[2] != H or flow.shape[3] != W:
+            scale_h = H / flow.shape[2]
+            scale_w = W / flow.shape[3]
+            flow = F.interpolate(flow, size=(H, W), mode='bilinear', align_corners=False)
+            flow = flow.clone()
+            flow[:, 0] *= scale_w
+            flow[:, 1] *= scale_h
+        
         return flow
     
-    def warp(self, x, flow):
+    def _safe_warp(self, x, flow):
         """
-        Warp an image using optical flow.
+        Safely warp an image using optical flow with size checking.
         
         Args:
             x: Image to warp [B, C, H, W]
-            flow: Optical flow [B, 2, H, W]
+            flow: Optical flow [B, 2, H_f, W_f]
         
         Returns:
             Warped image [B, C, H, W]
         """
         B, C, H, W = x.shape
         
-        # Ensure flow matches input size
+        # Resize flow if dimensions don't match
         if flow.shape[2] != H or flow.shape[3] != W:
+            scale_h = H / flow.shape[2]
+            scale_w = W / flow.shape[3]
             flow = F.interpolate(flow, size=(H, W), mode='bilinear', align_corners=False)
-            # Scale flow values when resizing
-            flow = flow * torch.tensor([W / flow.shape[3], H / flow.shape[2]], 
-                                        device=flow.device).view(1, 2, 1, 1)
+            flow = flow.clone()
+            flow[:, 0] *= scale_w
+            flow[:, 1] *= scale_h
         
         # Create coordinate grid
         grid_y, grid_x = torch.meshgrid(
@@ -177,13 +210,18 @@ class SpyNet(nn.Module):
         grid = grid + flow
         
         # Normalize to [-1, 1]
-        grid[:, 0] = 2.0 * grid[:, 0] / max(W - 1, 1) - 1.0
-        grid[:, 1] = 2.0 * grid[:, 1] / max(H - 1, 1) - 1.0
+        grid_norm = grid.clone()
+        grid_norm[:, 0] = 2.0 * grid[:, 0] / max(W - 1, 1) - 1.0
+        grid_norm[:, 1] = 2.0 * grid[:, 1] / max(H - 1, 1) - 1.0
         
         # Permute for grid_sample: [B, H, W, 2]
-        grid = grid.permute(0, 2, 3, 1)
+        grid_norm = grid_norm.permute(0, 2, 3, 1)
         
-        return F.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
+        return F.grid_sample(x, grid_norm, mode='bilinear', padding_mode='border', align_corners=True)
+    
+    def warp(self, x, flow):
+        """Warp an image using optical flow (wrapper for _safe_warp)."""
+        return self._safe_warp(x, flow)
     
     def forward(self, ref, supp):
         """Forward pass - compute flow from supp to ref."""
