@@ -1,0 +1,424 @@
+{
+  "last_node_id": 12,
+  "last_link_id": 14,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VHS_LoadVideo",
+      "pos": [50, 300],
+      "size": [250, 250],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [1],
+          "slot_index": 0
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [14]
+        },
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_LoadVideo"
+      },
+      "widgets_values": {
+        "video": "",
+        "force_rate": 0,
+        "force_size": "Disabled",
+        "custom_width": 512,
+        "custom_height": 512,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1
+      }
+    },
+    {
+      "id": 2,
+      "type": "GolfBallArtifactRemover",
+      "pos": [350, 300],
+      "size": [260, 160],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "cleaned_images",
+          "type": "IMAGE",
+          "links": [2],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "GolfBallArtifactRemover"
+      },
+      "widgets_values": {
+        "strength": 0.3,
+        "preserve_edges": 0.8,
+        "method": "bilateral",
+        "block_size": 8
+      },
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 3,
+      "type": "ISeeBetterModelLoader",
+      "pos": [350, 50],
+      "size": [260, 100],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "outputs": [
+        {
+          "name": "model",
+          "type": "ISEEBETTER_MODEL",
+          "links": [3],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ISeeBetterModelLoader"
+      },
+      "widgets_values": {
+        "model_name": "RBPN_4x.pth",
+        "scale_factor": 4,
+        "force_num_frames": 0
+      },
+      "color": "#1f3d1f",
+      "bgcolor": "#2d5a2d"
+    },
+    {
+      "id": 4,
+      "type": "ISeeBetterUpscale",
+      "pos": [660, 250],
+      "size": [280, 220],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "ISEEBETTER_MODEL",
+          "link": 3
+        },
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "upscaled_images",
+          "type": "IMAGE",
+          "links": [4],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ISeeBetterUpscale"
+      },
+      "widgets_values": {
+        "optical_flow_method": "spynet",
+        "tile_size": 0,
+        "tile_overlap": 32,
+        "smooth_flow": true,
+        "flow_scale": 1.0
+      },
+      "color": "#1f3d1f",
+      "bgcolor": "#2d5a2d"
+    },
+    {
+      "id": 5,
+      "type": "WaterDetailEnhance",
+      "pos": [990, 250],
+      "size": [260, 120],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "enhanced_images",
+          "type": "IMAGE",
+          "links": [5],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WaterDetailEnhance"
+      },
+      "widgets_values": {
+        "strength": 0.5,
+        "use_frequency_attention": true
+      },
+      "color": "#1f2d3d",
+      "bgcolor": "#2d4a5a"
+    },
+    {
+      "id": 6,
+      "type": "WaterPostProcess",
+      "pos": [1300, 250],
+      "size": [260, 160],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "processed_images",
+          "type": "IMAGE",
+          "links": [6],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WaterPostProcess"
+      },
+      "widgets_values": {
+        "highlight_strength": 0.2,
+        "contrast_strength": 0.3,
+        "saturation": 1.1,
+        "blue_boost": 1.1
+      },
+      "color": "#1f2d3d",
+      "bgcolor": "#2d4a5a"
+    },
+    {
+      "id": 7,
+      "type": "GolfBallArtifactRemover",
+      "pos": [1610, 250],
+      "size": [260, 160],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "cleaned_images",
+          "type": "IMAGE",
+          "links": [7],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "GolfBallArtifactRemover"
+      },
+      "widgets_values": {
+        "strength": 0.4,
+        "preserve_edges": 0.7,
+        "method": "adaptive",
+        "block_size": 8
+      },
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 8,
+      "type": "ImageSharpener",
+      "pos": [1920, 250],
+      "size": [260, 120],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "sharpened_images",
+          "type": "IMAGE",
+          "links": [8],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageSharpener"
+      },
+      "widgets_values": {
+        "amount": 0.3,
+        "radius": 1,
+        "threshold": 0.0
+      },
+      "color": "#3d2a1f",
+      "bgcolor": "#5a3d2d"
+    },
+    {
+      "id": 9,
+      "type": "VHS_VideoCombine",
+      "pos": [2230, 250],
+      "size": [260, 300],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 8
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": {
+        "frame_rate": 30,
+        "loop_count": 0,
+        "filename_prefix": "water_upscaled",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true
+      },
+      "color": "#3d1f1f",
+      "bgcolor": "#5a2d2d"
+    },
+    {
+      "id": 10,
+      "type": "Note",
+      "pos": [50, 50],
+      "size": [250, 200],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "properties": {},
+      "widgets_values": [
+        "WATER VIDEO UPSCALE WORKFLOW\n\n1. Load Video\n2. Pre-clean artifacts (gentle)\n3. Upscale with iSeeBetter + SpyNet\n4. Enhance water details\n5. Water post-processing\n6. Post-clean artifacts (adaptive)\n7. Final sharpening\n8. Save video\n\nAdjust strengths based on your input quality."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 11,
+      "type": "Note",
+      "pos": [350, 500],
+      "size": [250, 100],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "properties": {},
+      "widgets_values": [
+        "PRE-CLEAN: Gentle settings\n- strength: 0.3 (light)\n- preserve_edges: 0.8 (keep detail)\n- method: bilateral (best quality)"
+      ],
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 12,
+      "type": "Note",
+      "pos": [1610, 450],
+      "size": [250, 100],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "properties": {},
+      "widgets_values": [
+        "POST-CLEAN: Adaptive settings\n- strength: 0.4 (moderate)\n- preserve_edges: 0.7\n- method: adaptive (detects blocks)"
+      ],
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "IMAGE"],
+    [2, 2, 0, 4, 1, "IMAGE"],
+    [3, 3, 0, 4, 0, "ISEEBETTER_MODEL"],
+    [4, 4, 0, 5, 0, "IMAGE"],
+    [5, 5, 0, 6, 0, "IMAGE"],
+    [6, 6, 0, 7, 0, "IMAGE"],
+    [7, 7, 0, 8, 0, "IMAGE"],
+    [8, 8, 0, 9, 0, "IMAGE"],
+    [14, 1, 2, 9, 1, "AUDIO"]
+  ],
+  "groups": [
+    {
+      "title": "1. INPUT",
+      "bounding": [40, 280, 280, 290],
+      "color": "#3f789e"
+    },
+    {
+      "title": "2. PRE-CLEAN",
+      "bounding": [340, 280, 280, 290],
+      "color": "#88A"
+    },
+    {
+      "title": "3. UPSCALE",
+      "bounding": [650, 30, 300, 460],
+      "color": "#8A8"
+    },
+    {
+      "title": "4. WATER ENHANCE",
+      "bounding": [980, 230, 590, 200],
+      "color": "#48A"
+    },
+    {
+      "title": "5. POST-CLEAN & SHARPEN",
+      "bounding": [1600, 230, 600, 200],
+      "color": "#A88"
+    },
+    {
+      "title": "6. OUTPUT",
+      "bounding": [2220, 230, 280, 340],
+      "color": "#A44"
+    }
+  ],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}
